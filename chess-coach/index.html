@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
+<title>1800 Chess Coach</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a two-pane analysis desk; capture on the left, position + coach on the right; stacks on phones. */
+:root{
+  --bg:#eef0ea; --panel:#f9faf6; --ink:#1b211d; --muted:#5d6860; --line:#d2d8ce;
+  --accent:#23664a; --accent-ink:#ffffff; --pick:#c46f12; --warn:#a2401c;
+  --sq-light:#e9e4d2; --sq-dark:#7f9472; --sel:rgba(196,111,18,.35);
+  --f-display:"Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-body:"Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#101512; --panel:#172019; --ink:#e4eae3; --muted:#94a198; --line:#2a352e;
+  --accent:#5cbf8f; --accent-ink:#08130d; --pick:#f0a23a; --warn:#f08a64;
+  --sq-light:#c8c3b0; --sq-dark:#5d7253; --sel:rgba(240,162,58,.4); color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#101512; --panel:#172019; --ink:#e4eae3; --muted:#94a198; --line:#2a352e;
+  --accent:#5cbf8f; --accent-ink:#08130d; --pick:#f0a23a; --warn:#f08a64;
+  --sq-light:#c8c3b0; --sq-dark:#5d7253; --sel:rgba(240,162,58,.4); color-scheme:dark }
+
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:20px 40px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:10px 20px}
+h1{font-family:var(--f-display);font-stretch:72%;font-weight:800;font-size:clamp(28px,4.4vw,42px);line-height:1;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h1 .elo{color:var(--accent)}
+.tag{color:var(--muted);margin:4px 0 0;max-width:62ch}
+.chip{font-family:var(--f-mono);font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);white-space:nowrap;display:inline-flex;align-items:center;gap:6px}
+.chip .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.chip.ok .dot{background:var(--accent)} .chip.bad .dot{background:var(--warn)}
+.chip.busy .dot{background:var(--pick);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){.chip.busy .dot{animation:none}}
+
+.grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:920px){.grid{grid-template-columns:minmax(0,1fr)}}
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.pane h2{font-family:var(--f-display);font-stretch:85%;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;margin:0;color:var(--muted)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.spread{justify-content:space-between}
+button,.btn{font:inherit;font-size:14px;font-weight:600;border:1px solid var(--line);background:transparent;color:var(--ink);padding:7px 12px;border-radius:7px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+button:hover:not(:disabled),.btn:hover{border-color:var(--muted)}
+button:focus-visible,.btn:focus-visible,input:focus-visible,select:focus-visible,.sq:focus-visible{outline:2px solid var(--pick);outline-offset:2px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{border:0;border-radius:0;padding:6px 11px}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+label.ctl{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+select,input[type=text]{font:inherit;font-size:14px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:6px 8px}
+input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
+.mono{font-family:var(--f-mono)}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+
+/* capture */
+.stage{position:relative;border:1px dashed var(--line);border-radius:8px;min-height:260px;display:flex;align-items:center;justify-content:center;background:var(--bg);overflow:hidden}
+.stage.has{border-style:solid}
+.stage-inner{position:relative;line-height:0}
+#view{display:block;max-width:100%}
+#overlay{position:absolute;inset:0;touch-action:none}
+.handle{fill:var(--pick);stroke:var(--panel);stroke-width:2;cursor:grab}
+.empty-state{padding:24px;text-align:center;max-width:44ch;display:flex;flex-direction:column;gap:8px}
+.empty-state b{font-family:var(--f-display);font-stretch:80%;font-size:20px}
+kbd{font-family:var(--f-mono);font-size:12px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:0;padding:0;list-style:none}
+.steps li{border:1px solid var(--line);border-radius:7px;padding:8px 10px;font-size:13px;display:flex;gap:8px;align-items:flex-start;min-width:0}
+.steps .n{font-family:var(--f-mono);font-size:12px;width:20px;height:20px;border-radius:50%;border:1px solid var(--muted);display:inline-flex;align-items:center;justify-content:center;flex:none;color:var(--muted)}
+.steps li.done .n{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.msg{font-size:13px;padding:8px 10px;border-radius:7px;border:1px solid var(--line)}
+.msg.warn{border-color:var(--warn);color:var(--warn)}
+.msg.ok{border-color:var(--accent)}
+
+/* board */
+.board-wrap{position:relative;width:100%;max-width:440px;aspect-ratio:1/1;margin:0 auto}
+.board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);width:100%;height:100%;border-radius:4px;overflow:hidden;border:1px solid var(--line)}
+.sq{border:0;padding:0;border-radius:0;display:flex;align-items:center;justify-content:center;font-size:min(8.4vw,40px);line-height:1;position:relative;cursor:pointer;font-family:"Segoe UI Symbol","DejaVu Sans","Noto Sans Symbols 2","Apple Symbols",serif}
+.sq.l{background:var(--sq-light)} .sq.d{background:var(--sq-dark)}
+.sq .pc-w{color:#fbfaf5;text-shadow:0 0 1px #111,0 0 1px #111,0 1px 1px #111}
+.sq .pc-b{color:#1c1c1c;text-shadow:0 0 1px rgba(255,255,255,.35)}
+.sq .coord{position:absolute;font-family:var(--f-mono);font-size:10px;line-height:1;color:rgba(0,0,0,.55);pointer-events:none}
+.sq .coord.f{right:3px;bottom:2px} .sq .coord.r{left:3px;top:2px}
+#arrows{position:absolute;inset:0;pointer-events:none}
+.palette{display:flex;flex-wrap:wrap;gap:4px}
+.palette button{width:38px;height:38px;justify-content:center;padding:0;font-size:24px;font-family:"Segoe UI Symbol","DejaVu Sans","Noto Sans Symbols 2","Apple Symbols",serif;background:var(--sq-dark)}
+.palette button.erase{font-family:var(--f-mono);font-size:12px;background:transparent;width:auto;padding:0 10px}
+.palette button[aria-pressed="true"]{outline:2px solid var(--pick);outline-offset:1px}
+#fen{flex:1;min-width:0;font-family:var(--f-mono);font-size:12px}
+
+/* coach */
+.pick{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.pick .san{font-family:var(--f-display);font-stretch:68%;font-weight:800;font-size:56px;line-height:.95;color:var(--pick);letter-spacing:-.01em}
+.pick .what{display:flex;flex-direction:column;gap:2px;min-width:0}
+.pick .what b{font-size:16px}
+table.lines{width:100%;border-collapse:collapse;font-size:13px}
+table.lines th{text-align:left;font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:4px 6px;border-bottom:1px solid var(--line)}
+table.lines td{padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+table.lines td.ev{font-family:var(--f-mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+table.lines td.pv{font-family:var(--f-mono);color:var(--muted);word-break:break-word}
+table.lines tr.is-pick td:first-child{color:var(--pick);font-weight:700}
+.scroll{overflow-x:auto}
+.history{font-family:var(--f-mono);font-size:12px;color:var(--muted);word-break:break-word}
+footer{color:var(--muted);font-size:12px;max-width:80ch}
+footer a{color:inherit}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1><span class="elo">1800</span> Chess Coach</h1>
+      <p class="tag">Point it at your board against a bot. It reads the position and suggests the move a club player around your target rating would choose, alongside the engine's best lines.</p>
+    </div>
+    <span class="chip busy" id="engineChip"><span class="dot"></span><span id="engineText">Loading engine…</span></span>
+  </header>
+
+  <div class="grid">
+    <!-- CAPTURE -->
+    <section class="pane" aria-labelledby="capH">
+      <div class="row spread">
+        <h2 id="capH">Capture</h2>
+        <div class="row">
+          <button id="btnScreen" type="button">Share screen</button>
+          <button id="btnCamera" type="button">Camera</button>
+          <label class="btn" for="file">Upload image</label>
+          <input id="file" type="file" accept="image/*" hidden>
+          <button id="btnStop" type="button" hidden>Stop</button>
+        </div>
+      </div>
+
+      <div class="stage" id="stage">
+        <div class="empty-state" id="emptyState">
+          <b>Show me your board</b>
+          <span class="muted small">Paste a screenshot with <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>V</kbd>, drop an image here, or share your screen for live reading. A snip of just the board works best.</span>
+        </div>
+        <div class="stage-inner" id="stageInner" hidden>
+          <canvas id="view"></canvas>
+          <svg id="overlay" aria-label="Board frame. Drag the four orange handles onto the board's outer corners."></svg>
+        </div>
+      </div>
+
+      <ol class="steps" id="steps">
+        <li id="st1"><span class="n">1</span><span>Get an image of the board</span></li>
+        <li id="st2"><span class="n">2</span><span>Drag the orange corners onto the board edges</span></li>
+        <li id="st3"><span class="n">3</span><span>Teach pieces once, from the starting position</span></li>
+        <li id="st4"><span class="n">4</span><span>Read the position</span></li>
+      </ol>
+
+      <div class="row">
+        <button id="btnLearn" type="button" disabled>Teach pieces from this image</button>
+        <button id="btnRead" type="button" class="primary" disabled>Read position</button>
+        <label class="row small" for="auto" id="autoWrap" hidden><input type="checkbox" id="auto" checked> Auto-read while sharing</label>
+      </div>
+      <div class="row small muted">
+        <span id="learnInfo">No pieces taught yet.</span>
+        <button id="btnResetFrame" type="button" class="small" disabled>Reset corners</button>
+        <button id="btnForget" type="button" class="small" disabled>Forget pieces</button>
+      </div>
+      <div class="msg" id="capMsg" hidden></div>
+    </section>
+
+    <!-- POSITION + COACH -->
+    <section class="pane" aria-labelledby="posH">
+      <div class="row spread">
+        <h2 id="posH">Position</h2>
+        <div class="row">
+          <span class="small muted">I play</span>
+          <div class="seg" role="group" aria-label="Your colour">
+            <button type="button" id="meW" aria-pressed="true">White</button>
+            <button type="button" id="meB" aria-pressed="false">Black</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="board-wrap">
+        <div class="board" id="board" role="grid" aria-label="Chess board"></div>
+        <svg id="arrows" viewBox="0 0 8 8" aria-hidden="true">
+          <defs>
+            <marker id="hPick" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--pick)"/></marker>
+            <marker id="hBest" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="3.6" markerHeight="3.6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker>
+          </defs>
+          <g id="arrowG"></g>
+        </svg>
+      </div>
+
+      <div class="row spread">
+        <div class="seg" role="group" aria-label="Side to move">
+          <button type="button" id="tW" aria-pressed="true">White to move</button>
+          <button type="button" id="tB" aria-pressed="false">Black to move</button>
+        </div>
+        <div class="row">
+          <button type="button" id="btnStart" class="small">Start position</button>
+          <button type="button" id="btnClear" class="small">Clear</button>
+        </div>
+      </div>
+
+      <div class="palette" id="palette" aria-label="Fix a square: pick a piece, then click squares"></div>
+
+      <div class="row">
+        <input type="text" id="fen" aria-label="FEN" spellcheck="false">
+        <button type="button" id="btnFen" class="small">Load FEN</button>
+        <button type="button" id="btnCopy" class="small">Copy</button>
+      </div>
+      <div class="msg warn" id="posMsg" hidden></div>
+
+      <h2>Coach</h2>
+      <div class="row">
+        <label class="ctl" for="elo">Strength <span class="mono" id="eloVal">1800</span></label>
+        <input type="range" id="elo" min="1320" max="2600" step="20" value="1800">
+        <label class="ctl" for="think">Think time
+          <select id="think"><option value="500">0.5 s</option><option value="1000" selected>1 s</option><option value="2000">2 s</option><option value="4000">4 s</option></select>
+        </label>
+      </div>
+
+      <div class="pick" id="pick" aria-live="polite">
+        <div class="san" id="pickSan">…</div>
+        <div class="what"><b id="pickHead">Thinking</b><span class="small muted" id="pickSub">Waiting for the engine.</span></div>
+      </div>
+
+      <div class="scroll">
+        <table class="lines" aria-label="Engine lines">
+          <thead><tr><th>Move</th><th>Eval</th><th>Line</th></tr></thead>
+          <tbody id="lines"><tr><td colspan="3" class="muted">No lines yet.</td></tr></tbody>
+        </table>
+      </div>
+      <div class="row small">
+        <a class="btn small" id="lichess" href="https://lichess.org/analysis" target="_blank" rel="noopener">Open in Lichess analysis</a>
+        <span class="history" id="history"></span>
+      </div>
+    </section>
+  </div>
+
+  <footer>
+    Built for learning and for games against bots. Using engine help in games against people breaks the fair-play rules of every major chess site.
+    Engine: <a href="https://github.com/nmrugg/stockfish.js" target="_blank" rel="noopener">Stockfish.js</a> (GPLv3), loaded from jsDelivr. Rules: chess.js.
+    Strength uses Stockfish's own Elo limiter, which is calibrated to engine rating lists, so it will not match a Chess.com or Lichess 1800 exactly.
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script>
+(() => {
+"use strict";
+const $ = id => document.getElementById(id);
+const START = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+const FILES = "abcdefgh";
+const GLYPH = {k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟"};
+const VS = "︎";
+const STORE_KEY = "chesscoach.v1";
+
+/* ---------- storage ---------- */
+function load(){ try{ return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }catch(e){ return {}; } }
+function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({templates:S.templates, corners:S.corners, me:S.me, elo:S.elo, think:S.think})); }catch(e){} }
+
+/* ---------- state ---------- */
+const saved = load();
+const S = {
+  board: boardFromFen(START), turn:"w", castling:"KQkq", ep:"-", half:0, full:1,
+  me: saved.me === "b" ? "b" : "w",
+  elo: +saved.elo || 1800, think: +saved.think || 1000,
+  tool: null,
+  templates: Array.isArray(saved.templates) ? saved.templates : [],
+  corners: Array.isArray(saved.corners) && saved.corners.length===4 ? saved.corners : [[0,0],[1,0],[1,1],[0,1]],
+  src: null, srcW:0, srcH:0, live:false, stream:null,
+  history: [], analysis:null
+};
+
+/* ---------- FEN helpers ---------- */
+function boardFromFen(fen){
+  const b = Array(64).fill(""); const rows = fen.split(" ")[0].split("/");
+  rows.forEach((row,r)=>{ let f=0; for(const ch of row){ if(/\d/.test(ch)) f+=+ch; else { b[r*8+f]=ch; f++; } } });
+  return b;
+}
+function placement(b){
+  let out=""; for(let r=0;r<8;r++){ let e=0; for(let f=0;f<8;f++){ const p=b[r*8+f]; if(!p) e++; else { if(e){out+=e;e=0;} out+=p; } } if(e) out+=e; if(r<7) out+="/"; }
+  return out;
+}
+function inferCastling(b){
+  let c="";
+  if(b[60]==="K"){ if(b[63]==="R") c+="K"; if(b[56]==="R") c+="Q"; }
+  if(b[4]==="k"){ if(b[7]==="r") c+="k"; if(b[0]==="r") c+="q"; }
+  return c || "-";
+}
+function currentFen(){ return `${placement(S.board)} ${S.turn} ${S.castling} ${S.ep} ${S.half} ${S.full}`; }
+function setFromFen(fen){
+  const p = fen.trim().split(/\s+/);
+  S.board = boardFromFen(p[0]); S.turn = p[1]==="b"?"b":"w";
+  S.castling = p[2] || inferCastling(S.board); S.ep = p[3] || "-";
+  S.half = +p[4] || 0; S.full = +p[5] || 1;
+}
+function sqName(i){ return FILES[i%8] + (8 - Math.floor(i/8)); }
+function sqIndex(name){ return (8 - +name[1]) * 8 + FILES.indexOf(name[0]); }
+
+function validate(){
+  const b=S.board; const wk=b.filter(p=>p==="K").length, bk=b.filter(p=>p==="k").length;
+  if(wk!==1||bk!==1) return `Each side needs exactly one king (found ${wk} white, ${bk} black).`;
+  for(let f=0;f<8;f++){ if(/p/i.test(b[f])||/p/i.test(b[56+f])) return "Pawns can't stand on the first or last rank."; }
+  const g = new Chess();
+  if(!g.load(currentFen())) return "That position isn't valid.";
+  const other = new Chess(); other.load(`${placement(b)} ${S.turn==="w"?"b":"w"} ${S.castling} - 0 1`);
+  if(other.in_check()) return `${S.turn==="w"?"Black":"White"} is in check but it's ${S.turn==="w"?"White":"Black"}'s move. Flip the side to move.`;
+  return null;
+}
+
+/* ---------- board UI ---------- */
+const boardEl = $("board");
+function orderIdx(){ const a=[...Array(64).keys()]; return S.me==="w" ? a : a.reverse(); }
+function renderBoard(){
+  boardEl.innerHTML = "";
+  const order = orderIdx();
+  order.forEach((i,k)=>{
+    const r=Math.floor(i/8), f=i%8;
+    const btn=document.createElement("button");
+    btn.type="button"; btn.className="sq " + ((r+f)%2===0?"l":"d"); btn.dataset.i=i;
+    const p=S.board[i];
+    btn.setAttribute("aria-label", sqName(i) + (p ? " " + pieceName(p) : " empty"));
+    if(p){ const s=document.createElement("span"); s.className = p===p.toUpperCase() ? "pc-w":"pc-b"; s.textContent = GLYPH[p.toLowerCase()]+VS; btn.appendChild(s); }
+    const vr=Math.floor(k/8), vf=k%8;
+    if(vr===7){ const c=document.createElement("span"); c.className="coord f"; c.textContent=FILES[f]; btn.appendChild(c); }
+    if(vf===0){ const c=document.createElement("span"); c.className="coord r"; c.textContent=8-r; btn.appendChild(c); }
+    boardEl.appendChild(btn);
+  });
+  $("fen").value = currentFen();
+  $("tW").setAttribute("aria-pressed", S.turn==="w"); $("tB").setAttribute("aria-pressed", S.turn==="b");
+  $("meW").setAttribute("aria-pressed", S.me==="w"); $("meB").setAttribute("aria-pressed", S.me==="b");
+  $("lichess").href = "https://lichess.org/analysis/standard/" + currentFen().replace(/ /g,"_");
+  $("history").textContent = S.history.length ? "Seen: " + S.history.slice(-12).join(" ") : "";
+}
+function pieceName(p){ return (p===p.toUpperCase()?"white ":"black ") + {k:"king",q:"queen",r:"rook",b:"bishop",n:"knight",p:"pawn"}[p.toLowerCase()]; }
+boardEl.addEventListener("click", e=>{
+  const t=e.target.closest(".sq"); if(!t||S.tool===null) return;
+  const i=+t.dataset.i; S.board[i] = S.tool==="x" ? "" : S.tool;
+  S.castling = inferCastling(S.board); S.ep="-"; S.history=[];
+  positionChanged();
+});
+
+function buildPalette(){
+  const pal=$("palette");
+  const items=[..."KQRBNP"].concat([..."kqrbnp"]);
+  items.forEach(p=>{
+    const b=document.createElement("button"); b.type="button"; b.dataset.p=p; b.setAttribute("aria-pressed","false");
+    b.setAttribute("aria-label","Place " + pieceName(p));
+    const s=document.createElement("span"); s.className = p===p.toUpperCase()?"pc-w":"pc-b"; s.textContent=GLYPH[p.toLowerCase()]+VS;
+    s.style.cssText = p===p.toUpperCase() ? "color:#fbfaf5;text-shadow:0 0 1px #111,0 0 1px #111" : "color:#1c1c1c";
+    b.appendChild(s); pal.appendChild(b);
+  });
+  const x=document.createElement("button"); x.type="button"; x.className="erase"; x.dataset.p="x"; x.textContent="Erase"; x.setAttribute("aria-pressed","false"); pal.appendChild(x);
+  const n=document.createElement("button"); n.type="button"; n.className="erase"; n.dataset.p=""; n.textContent="Done"; n.setAttribute("aria-pressed","true"); pal.appendChild(n);
+  pal.addEventListener("click", e=>{
+    const b=e.target.closest("button"); if(!b) return;
+    S.tool = b.dataset.p==="" ? null : b.dataset.p;
+    pal.querySelectorAll("button").forEach(o=>o.setAttribute("aria-pressed", String(o===b)));
+  });
+}
+
+/* ---------- arrows ---------- */
+function sqCenter(name){
+  const i=sqIndex(name); let r=Math.floor(i/8), f=i%8;
+  if(S.me==="b"){ r=7-r; f=7-f; } return [f+.5, r+.5];
+}
+function arrow(from,to,cls,w){
+  const [x1,y1]=sqCenter(from), [x2,y2]=sqCenter(to);
+  const dx=x2-x1, dy=y2-y1, L=Math.hypot(dx,dy), sh=.32;
+  const ex=x2-dx/L*sh, ey=y2-dy/L*sh;
+  return `<line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="var(--${cls})" stroke-width="${w}" stroke-linecap="round" opacity=".9" marker-end="url(#h${cls==="pick"?"Pick":"Best"})"/>`;
+}
+function renderArrows(){
+  const g=$("arrowG"); const a=S.analysis; if(!a||!a.best){ g.innerHTML=""; return; }
+  let html=""; const top=a.lines[0];
+  if(top && top.uci && top.uci!==a.best) html += arrow(top.uci.slice(0,2), top.uci.slice(2,4), "accent", .12);
+  html += arrow(a.best.slice(0,2), a.best.slice(2,4), "pick", .17);
+  g.innerHTML = html;
+}
+
+/* ---------- engine ---------- */
+const ENGINES = [
+  {name:"Stockfish 17.1", url:"https://cdn.jsdelivr.net/npm/stockfish@17.1.0/src/stockfish-17.1-asm-341ff22.js", elo:true},
+  {name:"Stockfish 11",   url:"https://cdn.jsdelivr.net/npm/stockfish@11.0.0/src/stockfish.asm.js", elo:false}
+];
+const Engine = {
+  w:null, info:null, busy:false, cur:null, pending:null, lines:{},
+  async init(){
+    for(const e of ENGINES){
+      try{ setChip("busy", `Loading ${e.name}…`); await this.start(e); this.info=e; setChip("ok", `${e.name} ready`); return; }
+      catch(err){ console.warn("engine failed", e.name, err); if(this.w) this.w.terminate(); this.w=null; }
+    }
+    setChip("bad","Engine failed to load");
+    throw new Error("no engine");
+  },
+  start(e){
+    return new Promise((res,rej)=>{
+      let w;
+      try{
+        const blob = new Blob([`importScripts(${JSON.stringify(e.url)});`], {type:"application/javascript"});
+        w = new Worker(URL.createObjectURL(blob));
+      }catch(err){ rej(err); return; }
+      this.w = w;
+      const t = setTimeout(()=>rej(new Error("timeout")), 45000);
+      w.onerror = ev => { clearTimeout(t); rej(new Error(ev.message||"worker error")); };
+      w.onmessage = m => {
+        String(m.data).split("\n").forEach(line=>{
+          if(line.trim()==="uciok"){ clearTimeout(t); w.onerror=null; w.onmessage = mm => String(mm.data).split("\n").forEach(l=>this.onLine(l.trim())); w.postMessage("isready"); res(); }
+        });
+      };
+      w.postMessage("uci");
+    });
+  },
+  analyse(fen, elo, ms){
+    return new Promise(resolve=>{
+      if(this.pending) this.pending.resolve(null);
+      this.pending = {fen, elo, ms, resolve};
+      if(this.busy) this.w.postMessage("stop"); else this.go();
+    });
+  },
+  go(){
+    const p=this.pending; this.pending=null; if(!p) return;
+    this.cur=p; this.busy=true; this.lines={};
+    const send = s => this.w.postMessage(s);
+    if(this.info.elo){ send("setoption name UCI_LimitStrength value true"); send(`setoption name UCI_Elo value ${p.elo}`); }
+    else { const skill=Math.max(0,Math.min(20,Math.round((p.elo-1100)/75))); send(`setoption name Skill Level value ${skill}`); }
+    send("setoption name MultiPV value 3");
+    send("position fen " + p.fen);
+    send("go movetime " + p.ms);
+  },
+  onLine(l){
+    if(!this.cur) return;
+    if(l.startsWith("info") && l.includes(" pv ")){
+      if(/ (lower|upper)bound/.test(l)) return;
+      const mp = +(l.match(/ multipv (\d+)/)||[0,1])[1];
+      const sc = l.match(/ score (cp|mate) (-?\d+)/); if(!sc) return;
+      const depth = +(l.match(/ depth (\d+)/)||[0,0])[1];
+      const pv = l.split(" pv ")[1].trim().split(/\s+/);
+      this.lines[mp] = {mp, kind:sc[1], val:+sc[2], depth, pv, uci:pv[0]};
+    } else if(l.startsWith("bestmove")){
+      const best = l.split(/\s+/)[1];
+      const cur=this.cur; this.cur=null; this.busy=false;
+      if(this.pending){ cur.resolve(null); this.go(); }
+      else cur.resolve({best: best && best!=="(none)" ? best : null, lines:Object.values(this.lines).sort((a,b)=>a.mp-b.mp).slice(0,3)});
+    }
+  }
+};
+function setChip(kind, text){ const c=$("engineChip"); c.className="chip "+kind; $("engineText").textContent=text; }
+
+let anaTimer=null, anaSeq=0;
+function scheduleAnalysis(){ clearTimeout(anaTimer); anaTimer=setTimeout(runAnalysis, 120); }
+async function runAnalysis(){
+  const seq=++anaSeq;
+  S.analysis=null; renderArrows();
+  const err = validate();
+  $("posMsg").hidden = !err; $("posMsg").textContent = err || "";
+  if(err){ showPick("—","Fix the position", "The coach needs a legal position before it can suggest a move."); $("lines").innerHTML=""; return; }
+  const g=new Chess(currentFen());
+  if(g.in_checkmate()){ showPick("#","Checkmate", `${g.turn()==="w"?"White":"Black"} has been mated.`); $("lines").innerHTML=""; return; }
+  if(g.in_stalemate()){ showPick("½","Stalemate", "No legal moves and no check: the game is drawn."); $("lines").innerHTML=""; return; }
+  if(!Engine.info){ showPick("…","Engine loading","The suggestion appears as soon as Stockfish is ready."); return; }
+  const side = S.turn==="w"?"White":"Black";
+  showPick("…", "Thinking", `${side} to move · about ${S.think/1000}s at ${S.elo}`);
+  setChip("busy", `${Engine.info.name} thinking…`);
+  const res = await Engine.analyse(currentFen(), S.elo, S.think);
+  if(!res || seq!==anaSeq) return;
+  setChip("ok", `${Engine.info.name} ready`);
+  S.analysis = res; renderAnalysis();
+}
+function showPick(san, head, sub){ $("pickSan").textContent=san; $("pickHead").textContent=head; $("pickSub").textContent=sub; }
+function uciToSan(fen, uci){
+  const g=new Chess(fen); const m=g.move({from:uci.slice(0,2), to:uci.slice(2,4), promotion:uci[4]||"q"}); return m?m.san:uci;
+}
+function pvToSan(fen, pv, n){
+  const g=new Chess(fen); const out=[];
+  for(const u of pv.slice(0,n)){ const m=g.move({from:u.slice(0,2), to:u.slice(2,4), promotion:u[4]||"q"}); if(!m) break; out.push(m.san); }
+  return out.join(" ");
+}
+function fmtEval(line){
+  const sign = S.turn==="w" ? 1 : -1;
+  if(line.kind==="mate"){ const v=line.val*sign; return (v>0?"#":"#-")+Math.abs(line.val); }
+  const v=line.val*sign/100; return (v>0?"+":"")+v.toFixed(2);
+}
+function renderAnalysis(){
+  const a=S.analysis, fen=currentFen();
+  if(!a.best){ showPick("—","No move","The engine returned no move for this position."); return; }
+  const pickSan = uciToSan(fen, a.best);
+  const top = a.lines[0];
+  const you = S.turn===S.me;
+  const head = you ? `Your move at ${S.elo}` : `Likely ${S.elo}-level reply`;
+  let sub;
+  if(!top) sub = "Engine lines unavailable.";
+  else if(top.uci===a.best) sub = `Also the engine's top choice (${fmtEval(top)}).`;
+  else {
+    const pl = a.lines.find(l=>l.uci===a.best);
+    sub = `The engine's top choice is ${uciToSan(fen, top.uci)} (${fmtEval(top)})` + (pl ? `; this move scores ${fmtEval(pl)}.` : ". Compare the two to see what a stronger player spots.");
+  }
+  if(!you) sub = `It's ${S.turn==="w"?"White":"Black"}'s turn, not yours. ` + sub;
+  showPick(pickSan, head, sub);
+  const tb=$("lines");
+  tb.innerHTML = a.lines.length ? "" : `<tr><td colspan="3" class="muted">No lines reported.</td></tr>`;
+  a.lines.forEach(l=>{
+    const tr=document.createElement("tr"); if(l.uci===a.best) tr.className="is-pick";
+    const td1=document.createElement("td"); td1.textContent = uciToSan(fen,l.uci) + (l.uci===a.best?"  ← pick":"");
+    const td2=document.createElement("td"); td2.className="ev"; td2.textContent = fmtEval(l);
+    const td3=document.createElement("td"); td3.className="pv"; td3.textContent = pvToSan(fen,l.pv,6) + `  (d${l.depth})`;
+    tr.append(td1,td2,td3); tb.appendChild(tr);
+  });
+  renderArrows();
+}
+function positionChanged(){ renderBoard(); scheduleAnalysis(); }
+
+/* ---------- capture: sources ---------- */
+const view=$("view"), overlay=$("overlay"), work=document.createElement("canvas");
+let video=null, rafId=0;
+function setSource(el, w, h, live){
+  S.src=el; S.srcW=w; S.srcH=h; S.live=live;
+  $("emptyState").hidden=true; $("stageInner").hidden=false; $("stage").classList.add("has");
+  $("btnStop").hidden=!live; $("autoWrap").hidden=!live;
+  layoutView(); drawView(); updateSteps();
+}
+function stopStream(){
+  if(S.stream){ S.stream.getTracks().forEach(t=>t.stop()); S.stream=null; }
+  cancelAnimationFrame(rafId);
+  if(S.live && video && video.videoWidth){ // freeze last frame as a still
+    const c=document.createElement("canvas"); c.width=video.videoWidth; c.height=video.videoHeight; c.getContext("2d").drawImage(video,0,0);
+    setSource(c, c.width, c.height, false);
+  }
+  S.live=false; $("btnStop").hidden=true; $("autoWrap").hidden=true;
+}
+async function startStream(kind){
+  const md = navigator.mediaDevices;
+  const fn = kind==="screen" ? md && md.getDisplayMedia : md && md.getUserMedia;
+  if(!fn){ capMsg("warn", "This browser doesn't offer "+(kind==="screen"?"screen sharing":"camera access")+" here. Paste or upload a screenshot instead."); return; }
+  try{
+    stopStream();
+    const stream = kind==="screen"
+      ? await md.getDisplayMedia({video:{frameRate:{ideal:5}}, audio:false})
+      : await md.getUserMedia({video:{facingMode:"environment", width:{ideal:1920}, height:{ideal:1080}}, audio:false});
+    S.stream=stream;
+    video=document.createElement("video"); video.muted=true; video.playsInline=true; video.srcObject=stream;
+    await video.play();
+    await new Promise(r=>{ if(video.videoWidth) r(); else video.onloadedmetadata=r; });
+    stream.getVideoTracks()[0].addEventListener("ended", stopStream);
+    setSource(video, video.videoWidth, video.videoHeight, true);
+    capMsg("ok", kind==="screen" ? "Sharing. Drag the corners onto the board. With auto-read on, each new position is read when it holds still." : "Camera on. Keep it steady and square to the screen; drag the corners onto the board.");
+    loopVideo(); startAuto();
+  }catch(err){
+    console.warn(err);
+    capMsg("warn", (kind==="screen"?"Screen sharing":"The camera")+" was blocked or cancelled. Inside the claude.ai viewer, capture isn't allowed: paste a screenshot (Ctrl/⌘+V) instead, or open the standalone copy of this page in your browser.");
+  }
+}
+function loopVideo(){
+  cancelAnimationFrame(rafId);
+  const step=()=>{ if(!S.live) return; if(video.videoWidth!==S.srcW||video.videoHeight!==S.srcH){ S.srcW=video.videoWidth; S.srcH=video.videoHeight; layoutView(); } drawView(); rafId=requestAnimationFrame(step); };
+  rafId=requestAnimationFrame(step);
+}
+function loadImageBlob(blob){
+  const url=URL.createObjectURL(blob); const img=new Image();
+  img.onload=()=>{ stopStream(); const c=document.createElement("canvas"); c.width=img.naturalWidth; c.height=img.naturalHeight; c.getContext("2d").drawImage(img,0,0); URL.revokeObjectURL(url);
+    setSource(c, c.width, c.height, false);
+    capMsg("ok", S.templates.length ? "Image loaded. Check the corners, then press Read position." : "Image loaded. If it shows the starting position, check the corners and press Teach pieces.");
+    if(S.templates.length) readPosition(false);
+  };
+  img.onerror=()=>capMsg("warn","That file couldn't be opened as an image.");
+  img.src=url;
+}
+document.addEventListener("paste", e=>{
+  const items=[...(e.clipboardData?.items||[])].filter(i=>i.type.startsWith("image/"));
+  if(!items.length) return; e.preventDefault(); loadImageBlob(items[0].getAsFile());
+});
+const stage=$("stage");
+stage.addEventListener("dragover", e=>{ e.preventDefault(); });
+stage.addEventListener("drop", e=>{ e.preventDefault(); const f=[...e.dataTransfer.files].find(f=>f.type.startsWith("image/")); if(f) loadImageBlob(f); });
+$("file").addEventListener("change", e=>{ const f=e.target.files[0]; if(f) loadImageBlob(f); e.target.value=""; });
+$("btnScreen").onclick=()=>startStream("screen");
+$("btnCamera").onclick=()=>startStream("camera");
+$("btnStop").onclick=()=>{ stopStream(); capMsg("ok","Stopped. The last frame stays on screen."); };
+
+function capMsg(kind, text){ const m=$("capMsg"); m.hidden=!text; m.className="msg "+(kind||""); m.textContent=text||""; }
+
+/* ---------- capture: view + corner handles ---------- */
+let disp={w:0,h:0};
+function layoutView(){
+  if(!S.src) return;
+  const maxW=stage.clientWidth-2, maxH=Math.max(260, Math.min(560, window.innerHeight*.62));
+  const s=Math.min(maxW/S.srcW, maxH/S.srcH);
+  disp={w:Math.round(S.srcW*s), h:Math.round(S.srcH*s)};
+  const dpr=window.devicePixelRatio||1;
+  view.width=disp.w*dpr; view.height=disp.h*dpr; view.style.width=disp.w+"px"; view.style.height=disp.h+"px";
+  overlay.setAttribute("width",disp.w); overlay.setAttribute("height",disp.h); overlay.setAttribute("viewBox",`0 0 ${disp.w} ${disp.h}`);
+  drawOverlay();
+}
+function drawView(){ if(!S.src) return; const c=view.getContext("2d"); c.drawImage(S.src,0,0,view.width,view.height); }
+function drawOverlay(){
+  const P=S.corners.map(([x,y])=>[x*disp.w, y*disp.h]);
+  const H=homography(UNIT, P);
+  let lines="";
+  for(let i=0;i<=8;i++){
+    const a=applyH(H,i/8,0), b=applyH(H,i/8,1), c=applyH(H,0,i/8), d=applyH(H,1,i/8);
+    lines+=`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}"/><line x1="${c[0]}" y1="${c[1]}" x2="${d[0]}" y2="${d[1]}"/>`;
+  }
+  overlay.innerHTML =
+    `<g stroke="var(--pick)" stroke-width="1" opacity=".75" fill="none">${lines}</g>` +
+    `<polygon points="${P.map(p=>p.join(",")).join(" ")}" fill="none" stroke="var(--pick)" stroke-width="2"/>` +
+    P.map((p,i)=>`<circle class="handle" data-i="${i}" cx="${p[0]}" cy="${p[1]}" r="9"><title>Drag to the board's ${["top-left","top-right","bottom-right","bottom-left"][i]} corner</title></circle>`).join("");
+}
+let dragI=-1;
+overlay.addEventListener("pointerdown", e=>{
+  const h=e.target.closest(".handle"); if(!h) return;
+  dragI=+h.dataset.i; overlay.setPointerCapture(e.pointerId); e.preventDefault();
+});
+overlay.addEventListener("pointermove", e=>{
+  if(dragI<0) return; const r=overlay.getBoundingClientRect();
+  S.corners[dragI]=[Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)), Math.min(1,Math.max(0,(e.clientY-r.top)/r.height))];
+  drawOverlay();
+});
+overlay.addEventListener("pointerup", ()=>{ if(dragI>=0){ dragI=-1; save(); updateSteps(); } });
+$("btnResetFrame").onclick=()=>{ S.corners=[[0,0],[1,0],[1,1],[0,1]]; drawOverlay(); save(); };
+window.addEventListener("resize", ()=>{ layoutView(); drawView(); });
+
+/* ---------- vision: homography + sampling ---------- */
+const UNIT=[[0,0],[1,0],[1,1],[0,1]];
+function homography(src,dst){
+  const A=[],b=[];
+  for(let i=0;i<4;i++){ const [x,y]=src[i],[X,Y]=dst[i];
+    A.push([x,y,1,0,0,0,-x*X,-y*X]); b.push(X);
+    A.push([0,0,0,x,y,1,-x*Y,-y*Y]); b.push(Y); }
+  const n=8, M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let p=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+    [M[c],M[p]]=[M[p],M[c]];
+    const piv=M[c][c]||1e-12;
+    for(let r=0;r<n;r++){ if(r===c) continue; const f=M[r][c]/piv; for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k]; }
+  }
+  const h=M.map((r,i)=>r[n]/(r[i]||1e-12)); h.push(1); return h;
+}
+function applyH(h,x,y){ const w=h[6]*x+h[7]*y+h[8]; return [(h[0]*x+h[1]*y+h[2])/w, (h[3]*x+h[4]*y+h[5])/w]; }
+
+const G=12, SUB=3, INSET=0.07, MASK_T=22;
+function grab(){
+  const P=S.corners.map(([x,y])=>[x*S.srcW, y*S.srcH]);
+  const xs=P.map(p=>p[0]), ys=P.map(p=>p[1]);
+  const ox=Math.max(0,Math.floor(Math.min(...xs))), oy=Math.max(0,Math.floor(Math.min(...ys)));
+  const w=Math.max(8,Math.min(S.srcW-ox, Math.ceil(Math.max(...xs))-ox+1)), h=Math.max(8,Math.min(S.srcH-oy, Math.ceil(Math.max(...ys))-oy+1));
+  work.width=w; work.height=h;
+  const c=work.getContext("2d",{willReadFrequently:true});
+  c.drawImage(S.src, ox, oy, w, h, 0, 0, w, h);
+  const data=c.getImageData(0,0,w,h).data;
+  return {data, w, h, H:homography(UNIT, P.map(([x,y])=>[x-ox,y-oy]))};
+}
+function sampleCell(img, vr, vc){
+  const out=new Float32Array(G*G*3), n=SUB*SUB, span=1-2*INSET;
+  for(let gy=0;gy<G;gy++) for(let gx=0;gx<G;gx++){
+    let R=0,Gr=0,B=0;
+    for(let sy=0;sy<SUB;sy++) for(let sx=0;sx<SUB;sx++){
+      const u=(vc + INSET + span*((gx+(sx+.5)/SUB)/G))/8;
+      const v=(vr + INSET + span*((gy+(sy+.5)/SUB)/G))/8;
+      let [x,y]=applyH(img.H,u,v);
+      x=Math.min(img.w-1,Math.max(0,x|0)); y=Math.min(img.h-1,Math.max(0,y|0));
+      const i=(y*img.w+x)*4; R+=img.data[i]; Gr+=img.data[i+1]; B+=img.data[i+2];
+    }
+    const k=(gy*G+gx)*3; out[k]=R/n; out[k+1]=Gr/n; out[k+2]=B/n;
+  }
+  return out;
+}
+function ringBg(cell){
+  const rs=[],gs=[],bs=[];
+  for(let gy=0;gy<G;gy++) for(let gx=0;gx<G;gx++){
+    if(gy!==0&&gy!==G-1&&gx!==0&&gx!==G-1) continue;
+    const k=(gy*G+gx)*3; rs.push(cell[k]); gs.push(cell[k+1]); bs.push(cell[k+2]);
+  }
+  const med=a=>{ a.sort((x,y)=>x-y); return a[a.length>>1]; };
+  return [med(rs),med(gs),med(bs)];
+}
+function dist3(a,k,b){ const dr=a[k]-b[0], dg=a[k+1]-b[1], db=a[k+2]-b[2]; return Math.sqrt(dr*dr+dg*dg+db*db); }
+function visualToIdx(vr,vc){ return S.me==="w" ? vr*8+vc : (7-vr)*8+(7-vc); }
+function emptyScore(cell,bg){ let s=0; for(let p=0;p<G*G;p++) s+=dist3(cell,p*3,bg); return s; }
+function tplScore(cell,bg,t){
+  let s=0;
+  for(let p=0;p<G*G;p++){
+    const k=p*3; let r,g,b;
+    if(t.m[p]){ r=t.c[k]; g=t.c[k+1]; b=t.c[k+2]; } else { r=bg[0]; g=bg[1]; b=bg[2]; }
+    const dr=cell[k]-r, dg=cell[k+1]-g, db=cell[k+2]-b; s+=Math.sqrt(dr*dr+dg*dg+db*db);
+  }
+  return s;
+}
+function recognize(){
+  const img=grab(); const out=Array(64).fill("");
+  for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
+    const cell=sampleCell(img,vr,vc), bg=ringBg(cell);
+    let best="", bestS=emptyScore(cell,bg);
+    for(const t of S.templates){ const s=tplScore(cell,bg,t); if(s<bestS){ bestS=s; best=t.p; } }
+    out[visualToIdx(vr,vc)]=best;
+  }
+  return out;
+}
+
+/* ---------- teach + read ---------- */
+function teach(){
+  if(!S.src) return;
+  const truth=S.board.slice(); const img=grab(); let added=0, faint=[];
+  const fresh=[];
+  for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
+    const i=visualToIdx(vr,vc), p=truth[i]; if(!p) continue;
+    const cell=sampleCell(img,vr,vc), bg=ringBg(cell);
+    const m=new Array(G*G); let on=0;
+    for(let q=0;q<G*G;q++){ m[q]= dist3(cell,q*3,bg)>MASK_T ? 1:0; on+=m[q]; }
+    if(on<6){ faint.push(sqName(i)); continue; }
+    fresh.push({p, c:Array.from(cell,v=>Math.round(v)), m}); added++;
+  }
+  // keep up to 8 examples per piece letter, newest first
+  const all=fresh.concat(S.templates), counts={}, kept=[];
+  for(const t of all){ counts[t.p]=(counts[t.p]||0)+1; if(counts[t.p]<=8) kept.push(t); }
+  S.templates=kept; save(); updateSteps();
+  const check=recognize(); let ok=0; check.forEach((p,i)=>{ if(p===truth[i]) ok++; });
+  const kinds=new Set(S.templates.map(t=>t.p)).size;
+  let text=`Learned ${added} pieces (${kinds} of 12 piece types). Re-reading this image: ${ok}/64 squares correct.`;
+  if(faint.length) text+=` These squares looked empty, so check the corners: ${faint.slice(0,6).join(", ")}${faint.length>6?"…":""}.`;
+  if(kinds<12) text+=" Some piece types are still unknown; teach from the starting position to cover all 12.";
+  capMsg(ok===64 && !faint.length ? "ok":"warn", text);
+}
+function inferFrom(prevFen, target){
+  const tryFen = fen => {
+    const g=new Chess(); if(!g.load(fen)) return null;
+    const ms=g.moves({verbose:true});
+    for(const m of ms){ g.move(m); if(g.fen().split(" ")[0]===target) return {fen:g.fen(), sans:[m.san]}; g.undo(); }
+    for(const m of ms){ g.move(m); for(const m2 of g.moves({verbose:true})){ g.move(m2); if(g.fen().split(" ")[0]===target){ const r={fen:g.fen(), sans:[m.san,m2.san]}; return r; } g.undo(); } g.undo(); }
+    return null;
+  };
+  const p=prevFen.split(" ");
+  return tryFen(prevFen) || tryFen(`${p[0]} ${p[1]==="w"?"b":"w"} ${p[2]} - 0 ${p[5]||1}`);
+}
+function applyRead(read, live){
+  const target=placement(read);
+  if(target===placement(S.board)) return false;
+  const prevOk = !validate();
+  const found = prevOk ? inferFrom(currentFen(), target) : null;
+  if(found){
+    setFromFen(found.fen); S.history.push(...found.sans);
+  } else {
+    if(live){
+      const prev=[S.board,S.turn,S.castling,S.ep]; S.board=read; S.turn=S.me; S.castling=inferCastling(read); S.ep="-";
+      if(validate()){ [S.board,S.turn,S.castling,S.ep]=prev; return false; }  // ignore unreadable frames while live
+    } else { S.board=read; S.castling=inferCastling(read); S.ep="-"; S.turn = S.me; }
+    S.history=[]; S.half=0; S.full=1;
+  }
+  positionChanged(); return true;
+}
+function readPosition(fromButton){
+  if(!S.src||!S.templates.length) return;
+  const read=recognize(); const changed=applyRead(read,false);
+  if(fromButton) capMsg("ok", changed ? "Position read. Fix any wrong square with the piece palette; the side to move defaults to you unless a move was detected." : "Same position as before.");
+}
+$("btnLearn").onclick=teach;
+$("btnRead").onclick=()=>readPosition(true);
+$("btnForget").onclick=()=>{ S.templates=[]; save(); updateSteps(); capMsg("ok","Forgot the taught pieces. Teach again from a starting position."); };
+
+let autoTimer=0, lastRead="", stable=0;
+function startAuto(){
+  clearInterval(autoTimer);
+  autoTimer=setInterval(()=>{
+    if(!S.live||!$("auto").checked||!S.templates.length||dragI>=0) return;
+    const r=recognize(), key=r.join(",");
+    if(key===lastRead) stable++; else { lastRead=key; stable=0; }
+    if(stable===1) applyRead(r,true);
+  }, 700);
+}
+
+function updateSteps(){
+  const has=!!S.src, framed=has, taught=S.templates.length>0;
+  $("st1").classList.toggle("done",has); $("st2").classList.toggle("done",has&&framed);
+  $("st3").classList.toggle("done",taught); $("st4").classList.toggle("done",taught&&has&&placement(S.board)!==placement(boardFromFen(START)));
+  $("btnLearn").disabled=!has; $("btnRead").disabled=!(has&&taught);
+  $("btnResetFrame").disabled=!has; $("btnForget").disabled=!taught;
+  const kinds=new Set(S.templates.map(t=>t.p)).size;
+  $("learnInfo").textContent = taught ? `Knows ${kinds} of 12 piece types (${S.templates.length} examples).` : "No pieces taught yet.";
+}
+
+/* ---------- controls ---------- */
+$("meW").onclick=()=>{ S.me="w"; save(); positionChanged(); };
+$("meB").onclick=()=>{ S.me="b"; save(); positionChanged(); };
+$("tW").onclick=()=>{ S.turn="w"; S.ep="-"; positionChanged(); };
+$("tB").onclick=()=>{ S.turn="b"; S.ep="-"; positionChanged(); };
+$("btnStart").onclick=()=>{ setFromFen(START); S.history=[]; positionChanged(); };
+$("btnClear").onclick=()=>{ S.board=Array(64).fill(""); S.castling="-"; S.ep="-"; S.history=[]; positionChanged(); };
+$("btnFen").onclick=()=>{
+  const f=$("fen").value.trim(); const g=new Chess();
+  if(!g.load(f)){ $("posMsg").hidden=false; $("posMsg").textContent="That FEN couldn't be read. It should look like: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"; return; }
+  setFromFen(g.fen()); S.history=[]; positionChanged();
+};
+$("fen").addEventListener("keydown", e=>{ if(e.key==="Enter") $("btnFen").click(); });
+$("btnCopy").onclick=e=>{
+  const f=$("fen"); const done=()=>{ e.target.textContent="Copied"; setTimeout(()=>e.target.textContent="Copy",1200); };
+  try{ navigator.clipboard.writeText(f.value).then(done, ()=>{ f.select(); }); }catch(err){ f.select(); }
+};
+$("elo").value=S.elo; $("eloVal").textContent=S.elo; $("think").value=String(S.think);
+$("elo").addEventListener("input", e=>{ S.elo=+e.target.value; $("eloVal").textContent=S.elo; });
+$("elo").addEventListener("change", ()=>{ save(); scheduleAnalysis(); });
+$("think").addEventListener("change", e=>{ S.think=+e.target.value; save(); scheduleAnalysis(); });
+
+/* ---------- boot ---------- */
+buildPalette(); renderBoard(); updateSteps();
+if(typeof Chess!=="function"){ setChip("bad","chess.js failed to load"); showPick("—","Rules library missing","chess.js didn't load, so the coach can't check positions."); return; }
+showPick("…","Engine loading","Stockfish is about 10 MB; the first load takes a few seconds.");
+Engine.init().then(scheduleAnalysis).catch(()=>showPick("—","Engine unavailable","Stockfish couldn't be loaded from jsDelivr. Check your connection and reload."));
+})();
+</script>
+
+</body>
+</html>
