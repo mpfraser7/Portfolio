@@ -87,6 +87,13 @@ kbd{font-family:var(--f-mono);font-size:12px;border:1px solid var(--line);border
 .sq .coord{position:absolute;font-family:var(--f-mono);font-size:10px;line-height:1;color:rgba(0,0,0,.55);pointer-events:none}
 .sq .coord.f{right:3px;bottom:2px} .sq .coord.r{left:3px;top:2px}
 #arrows{position:absolute;inset:0;pointer-events:none}
+.board .sq{touch-action:none}
+.sq.lifting span:not(.coord){opacity:.25}
+.sq.drop{box-shadow:inset 0 0 0 3px var(--pick)}
+.ghost{position:fixed;z-index:50;pointer-events:none;transform:translate(-50%,-55%);line-height:1;font-family:"Segoe UI Symbol","DejaVu Sans","Noto Sans Symbols 2","Apple Symbols",serif}
+.ghost.pc-w{color:#fbfaf5;text-shadow:0 0 1px #111,0 0 1px #111,0 1px 1px #111}
+.ghost.pc-b{color:#1c1c1c;text-shadow:0 0 1px rgba(255,255,255,.35)}
+.palette button:not(.erase){touch-action:none;cursor:grab}
 .palette{display:flex;flex-wrap:wrap;gap:4px}
 .palette button{width:38px;height:38px;justify-content:center;padding:0;font-size:24px;font-family:"Segoe UI Symbol","DejaVu Sans","Noto Sans Symbols 2","Apple Symbols",serif;background:var(--sq-dark)}
 .palette button.erase{font-family:var(--f-mono);font-size:12px;background:transparent;width:auto;padding:0 10px}
@@ -147,12 +154,12 @@ footer a{color:inherit}
       <ol class="steps" id="steps">
         <li id="st1"><span class="n">1</span><span>Get an image of the board</span></li>
         <li id="st2"><span class="n">2</span><span>Drag the orange corners onto the board edges</span></li>
-        <li id="st3"><span class="n">3</span><span>Teach pieces once, from the starting position</span></li>
+        <li id="st3"><span class="n">3</span><span>Make the right-hand board match the image, then teach (once per piece set)</span></li>
         <li id="st4"><span class="n">4</span><span>Read the position</span></li>
       </ol>
 
       <div class="row">
-        <button id="btnLearn" type="button" disabled>Teach pieces from this image</button>
+        <button id="btnLearn" type="button" disabled>Teach: right-hand board matches image</button>
         <button id="btnRead" type="button" class="primary" disabled>Read position</button>
         <label class="row small" for="auto" id="autoWrap" hidden><input type="checkbox" id="auto" checked> Auto-read while sharing</label>
       </div>
@@ -199,7 +206,8 @@ footer a{color:inherit}
         </div>
       </div>
 
-      <div class="palette" id="palette" aria-label="Fix a square: pick a piece, then click squares"></div>
+      <div class="palette" id="palette" aria-label="Piece palette: drag a piece onto the board, or select one and click squares"></div>
+      <p class="small muted" style="margin:0">Drag pieces to move them, drag one off the board to remove it, or drag from the palette to add.</p>
 
       <div class="row">
         <input type="text" id="fen" aria-label="FEN" spellcheck="false">
@@ -332,11 +340,66 @@ function renderBoard(){
   $("history").textContent = S.history.length ? "Seen: " + S.history.slice(-12).join(" ") : "";
 }
 function pieceName(p){ return (p===p.toUpperCase()?"white ":"black ") + {k:"king",q:"queen",r:"rook",b:"bishop",n:"knight",p:"pawn"}[p.toLowerCase()]; }
+function edited(){ S.castling = inferCastling(S.board); S.ep="-"; S.history=[]; positionChanged(); }
+
+/* drag and drop: board -> board moves, board -> outside removes, palette -> board adds */
+let drag=null;
+function sqAt(x,y){
+  const el=document.elementFromPoint(x,y); const s=el && el.closest(".sq");
+  return s && boardEl.contains(s) ? +s.dataset.i : null;
+}
+function startDrag(e, piece, from){
+  const ghost=document.createElement("span");
+  ghost.className="ghost " + (piece===piece.toUpperCase()?"pc-w":"pc-b");
+  ghost.textContent=GLYPH[piece.toLowerCase()]+VS;
+  ghost.style.fontSize=(boardEl.getBoundingClientRect().width/8*0.9)+"px";
+  document.body.appendChild(ghost);
+  drag={piece, from, ghost, x0:e.clientX, y0:e.clientY, moved:false, over:null};
+  if(from!==null){ const s=boardEl.querySelector(`.sq[data-i="${from}"]`); if(s) s.classList.add("lifting"); }
+  moveDrag(e);
+}
+function moveDrag(e){
+  if(!drag) return;
+  if(Math.hypot(e.clientX-drag.x0, e.clientY-drag.y0)>4) drag.moved=true;
+  drag.ghost.style.left=e.clientX+"px"; drag.ghost.style.top=e.clientY+"px";
+  const over=sqAt(e.clientX,e.clientY);
+  if(over!==drag.over){
+    boardEl.querySelectorAll(".sq.drop").forEach(s=>s.classList.remove("drop"));
+    if(over!==null && drag.moved){ const s=boardEl.querySelector(`.sq[data-i="${over}"]`); if(s) s.classList.add("drop"); }
+    drag.over=over;
+  }
+}
+function endDrag(e, cancel){
+  if(!drag) return;
+  const d=drag; drag=null; d.ghost.remove();
+  boardEl.querySelectorAll(".sq.drop,.sq.lifting").forEach(s=>s.classList.remove("drop","lifting"));
+  if(cancel || !d.moved) return;
+  const to=sqAt(e.clientX,e.clientY);
+  if(d.from!==null){
+    if(to===d.from) return;
+    S.board[d.from]="";
+    if(to!==null) S.board[to]=d.piece;
+  } else if(to!==null) S.board[to]=d.piece;
+  else return;
+  edited();
+}
+window.addEventListener("pointermove", moveDrag);
+window.addEventListener("pointerup", e=>endDrag(e,false));
+window.addEventListener("pointercancel", e=>endDrag(e,true));
+
+boardEl.addEventListener("pointerdown", e=>{
+  if(e.button!==0) return;
+  const t=e.target.closest(".sq"); if(!t) return;
+  const i=+t.dataset.i;
+  if(S.tool!==null){ e.preventDefault(); S.board[i] = S.tool==="x" ? "" : S.tool; edited(); return; }
+  if(!S.board[i]) return;
+  e.preventDefault(); startDrag(e, S.board[i], i);
+});
+// keyboard: with a palette piece selected, Enter/Space on a square places it
 boardEl.addEventListener("click", e=>{
-  const t=e.target.closest(".sq"); if(!t||S.tool===null) return;
-  const i=+t.dataset.i; S.board[i] = S.tool==="x" ? "" : S.tool;
-  S.castling = inferCastling(S.board); S.ep="-"; S.history=[];
-  positionChanged();
+  if(e.detail!==0 || S.tool===null) return;
+  const t=e.target.closest(".sq"); if(!t) return;
+  const i=+t.dataset.i; S.board[i] = S.tool==="x" ? "" : S.tool; edited();
 });
 
 function buildPalette(){
@@ -351,6 +414,11 @@ function buildPalette(){
   });
   const x=document.createElement("button"); x.type="button"; x.className="erase"; x.dataset.p="x"; x.textContent="Erase"; x.setAttribute("aria-pressed","false"); pal.appendChild(x);
   const n=document.createElement("button"); n.type="button"; n.className="erase"; n.dataset.p=""; n.textContent="Done"; n.setAttribute("aria-pressed","true"); pal.appendChild(n);
+  pal.addEventListener("pointerdown", e=>{
+    if(e.button!==0) return;
+    const b=e.target.closest("button"); if(!b || !b.dataset.p || b.dataset.p==="x") return;
+    e.preventDefault(); startDrag(e, b.dataset.p, null);
+  });
   pal.addEventListener("click", e=>{
     const b=e.target.closest("button"); if(!b) return;
     S.tool = b.dataset.p==="" ? null : b.dataset.p;
@@ -558,7 +626,7 @@ function loadImageBlob(blob){
   const url=URL.createObjectURL(blob); const img=new Image();
   img.onload=()=>{ stopStream(); const c=document.createElement("canvas"); c.width=img.naturalWidth; c.height=img.naturalHeight; c.getContext("2d").drawImage(img,0,0); URL.revokeObjectURL(url);
     setSource(c, c.width, c.height, false);
-    capMsg("ok", S.templates.length ? "Image loaded. Check the corners, then press Read position." : "Image loaded. If it shows the starting position, check the corners and press Teach pieces.");
+    capMsg("ok", S.templates.length ? "Image loaded. Check the corners, then press Read position." : "Image loaded. Set the corners, make the right-hand board match the image (drag pieces, or press Start position for a new game), then press Teach.");
     if(S.templates.length) readPosition(false);
   };
   img.onerror=()=>capMsg("warn","That file couldn't be opened as an image.");
@@ -636,7 +704,7 @@ function homography(src,dst){
 }
 function applyH(h,x,y){ const w=h[6]*x+h[7]*y+h[8]; return [(h[0]*x+h[1]*y+h[2])/w, (h[3]*x+h[4]*y+h[5])/w]; }
 
-const G=12, SUB=3, INSET=0.07, MASK_T=22;
+const G=12, SUB=3, INSET=0.07, MASK_T=22, OCC_T=18;
 function grab(){
   const P=S.corners.map(([x,y])=>[x*S.srcW, y*S.srcH]);
   const xs=P.map(p=>p[0]), ys=P.map(p=>p[1]);
@@ -674,13 +742,21 @@ function ringBg(cell){
 }
 function dist3(a,k,b){ const dr=a[k]-b[0], dg=a[k+1]-b[1], db=a[k+2]-b[2]; return Math.sqrt(dr*dr+dg*dg+db*db); }
 function visualToIdx(vr,vc){ return S.me==="w" ? vr*8+vc : (7-vr)*8+(7-vc); }
-function emptyScore(cell,bg){ let s=0; for(let p=0;p<G*G;p++) s+=dist3(cell,p*3,bg); return s; }
-function tplScore(cell,bg,t){
-  let s=0;
+/* Shape + colour matching: compare where the piece is (a soft outline that ignores the square colour),
+   then the colour inside the shared outline. Works across light, dark and highlighted squares. */
+function fgOf(cell,bg){
+  const f=new Float32Array(G*G);
+  for(let p=0;p<G*G;p++) f[p]=Math.min(1,Math.max(0,(dist3(cell,p*3,bg)-14)/28));
+  return f;
+}
+const fgCache=new WeakMap();
+function tplFg(t){ let f=fgCache.get(t); if(!f){ f=fgOf(t.c, ringBg(t.c)); fgCache.set(t,f); } return f; }
+function sum(a){ let s=0; for(const v of a) s+=v; return s; }
+function tplScore(cell,f,t){
+  const tf=tplFg(t); let s=0;
   for(let p=0;p<G*G;p++){
-    const k=p*3; let r,g,b;
-    if(t.m[p]){ r=t.c[k]; g=t.c[k+1]; b=t.c[k+2]; } else { r=bg[0]; g=bg[1]; b=bg[2]; }
-    const dr=cell[k]-r, dg=cell[k+1]-g, db=cell[k+2]-b; s+=Math.sqrt(dr*dr+dg*dg+db*db);
+    const a=f[p], b=tf[p]; s+=Math.abs(a-b);
+    const m=a<b?a:b; if(m>0){ const k=p*3, dr=cell[k]-t.c[k], dg=cell[k+1]-t.c[k+1], db=cell[k+2]-t.c[k+2]; s+=m*Math.sqrt(dr*dr+dg*dg+db*db)/100; }
   }
   return s;
 }
@@ -688,8 +764,8 @@ function recognize(){
   const img=grab(); const out=Array(64).fill("");
   for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
     const cell=sampleCell(img,vr,vc), bg=ringBg(cell);
-    let best="", bestS=emptyScore(cell,bg);
-    for(const t of S.templates){ const s=tplScore(cell,bg,t); if(s<bestS){ bestS=s; best=t.p; } }
+    const f=fgOf(cell,bg); let best="", bestS=sum(f);
+    for(const t of S.templates){ const s=tplScore(cell,f,t); if(s<bestS){ bestS=s; best=t.p; } }
     out[visualToIdx(vr,vc)]=best;
   }
   return out;
@@ -698,26 +774,33 @@ function recognize(){
 /* ---------- teach + read ---------- */
 function teach(){
   if(!S.src) return;
-  const truth=S.board.slice(); const img=grab(); let added=0, faint=[];
-  const fresh=[];
+  const truth=S.board.slice(); const img=grab();
+  const fresh=[], bad=[];
   for(let vr=0;vr<8;vr++) for(let vc=0;vc<8;vc++){
-    const i=visualToIdx(vr,vc), p=truth[i]; if(!p) continue;
+    const i=visualToIdx(vr,vc), p=truth[i];
     const cell=sampleCell(img,vr,vc), bg=ringBg(cell);
     const m=new Array(G*G); let on=0;
     for(let q=0;q<G*G;q++){ m[q]= dist3(cell,q*3,bg)>MASK_T ? 1:0; on+=m[q]; }
-    if(on<6){ faint.push(sqName(i)); continue; }
-    fresh.push({p, c:Array.from(cell,v=>Math.round(v)), m}); added++;
+    // measured on chess.com boards: empty squares (with coordinate labels) mark <=5 cells, pawns >=48
+    if(!p){ if(on>OCC_T) bad.push(`${sqName(i)} has a piece in the image`); continue; }
+    if(on<OCC_T){ bad.push(`${sqName(i)} looks empty in the image`); continue; }
+    fresh.push({p, c:Array.from(cell,v=>Math.round(v)), m});
   }
-  // keep up to 8 examples per piece letter, newest first
-  const all=fresh.concat(S.templates), counts={}, kept=[];
+  if(bad.length){
+    capMsg("warn", `Nothing was learned: the board on the right doesn't match the image. ${bad.slice(0,4).join("; ")}${bad.length>4?` (and ${bad.length-4} more)`:""}. Drag pieces until the boards match, and check "I play" and the orange corners, then teach again.`);
+    return;
+  }
+  if(!fresh.length){ capMsg("warn","The board on the right is empty, so there's nothing to learn from."); return; }
+  // new examples replace older ones of the same piece type; keep up to 8 per type
+  const types=new Set(fresh.map(t=>t.p));
+  const all=fresh.concat(S.templates.filter(t=>!types.has(t.p))), counts={}, kept=[];
   for(const t of all){ counts[t.p]=(counts[t.p]||0)+1; if(counts[t.p]<=8) kept.push(t); }
   S.templates=kept; save(); updateSteps();
   const check=recognize(); let ok=0; check.forEach((p,i)=>{ if(p===truth[i]) ok++; });
   const kinds=new Set(S.templates.map(t=>t.p)).size;
-  let text=`Learned ${added} pieces (${kinds} of 12 piece types). Re-reading this image: ${ok}/64 squares correct.`;
-  if(faint.length) text+=` These squares looked empty, so check the corners: ${faint.slice(0,6).join(", ")}${faint.length>6?"…":""}.`;
-  if(kinds<12) text+=" Some piece types are still unknown; teach from the starting position to cover all 12.";
-  capMsg(ok===64 && !faint.length ? "ok":"warn", text);
+  let text=`Learned ${fresh.length} pieces (${kinds} of 12 piece types known). Re-reading this image: ${ok}/64 squares correct.`;
+  if(kinds<12) text+=` Still unknown: ${[..."KQRBNPkqrbnp"].filter(p=>!S.templates.some(t=>t.p===p)).map(pieceName).join(", ")}. Teach from another position that has them.`;
+  capMsg(ok===64 ? "ok":"warn", text);
 }
 function inferFrom(prevFen, target){
   const tryFen = fen => {
