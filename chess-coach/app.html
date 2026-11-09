@@ -56,6 +56,8 @@ label.ctl{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--
 select,input[type=text]{font:inherit;font-size:14px;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:6px 8px}
 input[type=range]{accent-color:var(--accent);width:180px;max-width:100%}
 .mono{font-family:var(--f-mono)}
+.check{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.check input{margin:3px 0 0;flex:none;accent-color:var(--accent)}
 .muted{color:var(--muted)}
 .small{font-size:13px}
 
@@ -224,6 +226,7 @@ footer a{color:inherit}
           <select id="think"><option value="500">0.5 s</option><option value="1000" selected>1 s</option><option value="2000">2 s</option><option value="4000">4 s</option></select>
         </label>
       </div>
+      <label class="check small" for="rep"><input type="checkbox" id="rep" checked> Stick to my repertoire: London as White, Caro-Kann (vs 1.e4) and Slav (vs everything else) as Black</label>
 
       <div class="pick" id="pick" aria-live="polite">
         <div class="san" id="pickSan">…</div>
@@ -263,7 +266,7 @@ const STORE_KEY = "chesscoach.v1";
 
 /* ---------- storage ---------- */
 function load(){ try{ return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }catch(e){ return {}; } }
-function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({templates:S.templates, corners:S.corners, me:S.me, elo:S.elo, think:S.think})); }catch(e){} }
+function save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify({templates:S.templates, corners:S.corners, me:S.me, elo:S.elo, think:S.think, rep:$("rep").checked})); }catch(e){} }
 
 /* ---------- state ---------- */
 const saved = load();
@@ -438,10 +441,10 @@ function arrow(from,to,cls,w){
   return `<line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="var(--${cls})" stroke-width="${w}" stroke-linecap="round" opacity=".9" marker-end="url(#h${cls==="pick"?"Pick":"Best"})"/>`;
 }
 function renderArrows(){
-  const g=$("arrowG"); const a=S.analysis; if(!a||!a.best){ g.innerHTML=""; return; }
+  const g=$("arrowG"); const a=S.analysis; const pick=a && (a.pick||a.best); if(!pick){ g.innerHTML=""; return; }
   let html=""; const top=a.lines[0];
-  if(top && top.uci && top.uci!==a.best) html += arrow(top.uci.slice(0,2), top.uci.slice(2,4), "accent", .12);
-  html += arrow(a.best.slice(0,2), a.best.slice(2,4), "pick", .17);
+  if(top && top.uci && top.uci!==pick) html += arrow(top.uci.slice(0,2), top.uci.slice(2,4), "accent", .12);
+  html += arrow(pick.slice(0,2), pick.slice(2,4), "pick", .17);
   g.innerHTML = html;
 }
 
@@ -478,22 +481,25 @@ const Engine = {
       w.postMessage("uci");
     });
   },
-  analyse(fen, elo, ms){
+  // opts: {limit: true|false (play at `elo` or full strength), multipv: n, searchmoves: "e2e4"}
+  analyse(fen, elo, ms, opts={}){
     return new Promise(resolve=>{
       if(this.pending) this.pending.resolve(null);
-      this.pending = {fen, elo, ms, resolve};
+      this.pending = {fen, elo, ms, opts, resolve};
       if(this.busy) this.w.postMessage("stop"); else this.go();
     });
   },
   go(){
     const p=this.pending; this.pending=null; if(!p) return;
     this.cur=p; this.busy=true; this.lines={};
-    const send = s => this.w.postMessage(s);
-    if(this.info.elo){ send("setoption name UCI_LimitStrength value true"); send(`setoption name UCI_Elo value ${p.elo}`); }
+    const send = s => this.w.postMessage(s), o=p.opts;
+    if(o.limit===false){
+      if(this.info.elo) send("setoption name UCI_LimitStrength value false"); else send("setoption name Skill Level value 20");
+    } else if(this.info.elo){ send("setoption name UCI_LimitStrength value true"); send(`setoption name UCI_Elo value ${p.elo}`); }
     else { const skill=Math.max(0,Math.min(20,Math.round((p.elo-1100)/75))); send(`setoption name Skill Level value ${skill}`); }
-    send("setoption name MultiPV value 3");
+    send(`setoption name MultiPV value ${o.multipv||3}`);
     send("position fen " + p.fen);
-    send("go movetime " + p.ms);
+    send("go movetime " + p.ms + (o.searchmoves ? " searchmoves " + o.searchmoves : ""));
   },
   onLine(l){
     if(!this.cur) return;
@@ -508,7 +514,7 @@ const Engine = {
       const best = l.split(/\s+/)[1];
       const cur=this.cur; this.cur=null; this.busy=false;
       if(this.pending){ cur.resolve(null); this.go(); }
-      else cur.resolve({best: best && best!=="(none)" ? best : null, lines:Object.values(this.lines).sort((a,b)=>a.mp-b.mp).slice(0,3)});
+      else cur.resolve({best: best && best!=="(none)" ? best : null, lines:Object.values(this.lines).sort((a,b)=>a.mp-b.mp)});
     }
   }
 };
@@ -526,14 +532,133 @@ async function runAnalysis(){
   if(g.in_checkmate()){ showPick("#","Checkmate", `${g.turn()==="w"?"White":"Black"} has been mated.`); $("lines").innerHTML=""; return; }
   if(g.in_stalemate()){ showPick("½","Stalemate", "No legal moves and no check: the game is drawn."); $("lines").innerHTML=""; return; }
   if(!Engine.info){ showPick("…","Engine loading","The suggestion appears as soon as Stockfish is ready."); return; }
-  const side = S.turn==="w"?"White":"Black";
+  const side = S.turn==="w"?"White":"Black", fen=currentFen();
+  const repOn = $("rep").checked && S.turn===S.me;
   showPick("…", "Thinking", `${side} to move · about ${S.think/1000}s at ${S.elo}`);
   setChip("busy", `${Engine.info.name} thinking…`);
-  const res = await Engine.analyse(currentFen(), S.elo, S.think);
-  if(!res || seq!==anaSeq) return;
+  let full=null, rep=null;
+  if(repOn){
+    // full-strength look first: it judges book and setup moves fairly
+    full = await Engine.analyse(fen, S.elo, S.think, {limit:false, multipv:6});
+    if(!full || seq!==anaSeq) return;
+    rep = await repertoireMove(fen, full);
+    if(rep===undefined || seq!==anaSeq) return;
+  }
+  let res;
+  if(rep && rep.kind!=="warn"){ res = {best:full.best, lines:full.lines, pick:rep.uci, rep}; }
+  else if(rep){ res = {best:full.best, lines:full.lines, pick:full.lines[0] ? full.lines[0].uci : full.best, rep}; }
+  else {
+    const lim = await Engine.analyse(fen, S.elo, S.think, {multipv:3});
+    if(!lim || seq!==anaSeq) return;
+    res = {best:lim.best, lines: full ? full.lines : lim.lines, pick:lim.best, rep: repOn ? {kind:"out"} : null};
+  }
   setChip("ok", `${Engine.info.name} ready`);
   S.analysis = res; renderAnalysis();
 }
+
+/* ---------- repertoire ---------- */
+// Each line is played from the start position; only the repertoire side's moves become book moves.
+// Positions are keyed by placement + side to move, so transpositions and screenshots work.
+const BOOK = [
+  // White: London System
+  ["w","London · vs …d5 and …e6",        "d4 d5 Bf4 Nf6 e3 e6 Nf3 c5 c3 Nc6 Nbd2 Bd6 Bg3 O-O Bd3"],
+  ["w","London · vs …d5 and early …Bd6", "d4 d5 Bf4 Nf6 e3 e6 Nf3 Bd6 Bg3 O-O Bd3 c5 c3 Nc6 Nbd2"],
+  ["w","London · vs …d5 and …Bf5",       "d4 d5 Bf4 Bf5 e3 e6 Nf3 Nf6 Bd3 Bxd3 Qxd3"],
+  ["w","London · vs …d5 and …c5",        "d4 d5 Bf4 c5 e3 Nc6 c3 Nf6 Nd2 e6 Ngf3 Bd6 Bg3 O-O Bd3"],
+  ["w","London · vs …c5 and …Qb6",       "d4 d5 Bf4 c5 e3 Nc6 c3 Qb6 Qb3 c4 Qc2 Bf5 Qc1"],
+  ["w","London · vs the King's Indian",  "d4 Nf6 Bf4 g6 e3 Bg7 Nf3 O-O Be2 d6 h3 c5 c3 Nc6 O-O"],
+  ["w","London · vs …Nf6 and …e6",       "d4 Nf6 Bf4 e6 e3 c5 c3 d5 Nd2 Nc6 Ngf3 Bd6 Bg3 O-O Bd3"],
+  ["w","London · vs …Nf6, …c5, …Qb6",    "d4 Nf6 Bf4 c5 e3 Qb6 Nc3"],
+  ["w","London · vs …Nf6 and …c5",       "d4 Nf6 Bf4 c5 e3 Nc6 c3 d5 Nd2"],
+  ["w","London · vs 1…e6",               "d4 e6 Bf4 d5 e3 Nf6 Nf3"],
+  ["w","London · vs the Dutch",          "d4 f5 Bf4 Nf6 e3 e6 Nf3 Be7 h3"],
+  ["w","London · vs 1…d6",               "d4 d6 Bf4 Nf6 e3 g6 Nf3 Bg7 Be2 O-O h3"],
+  ["w","London · vs 1…g6",               "d4 g6 Bf4 Bg7 e3 d6 Nf3 Nf6 Be2 O-O h3"],
+  // Black vs 1.e4: Caro-Kann
+  ["b","Caro-Kann · Advance, Short system", "e4 c6 d4 d5 e5 Bf5 Nf3 e6 Be2 c5 Be3 Nd7 O-O Ne7"],
+  ["b","Caro-Kann · Advance, 6.O-O",        "e4 c6 d4 d5 e5 Bf5 Nf3 e6 Be2 c5 O-O Nc6"],
+  ["b","Caro-Kann · Advance, 4.Nc3",        "e4 c6 d4 d5 e5 Bf5 Nc3 e6 g4 Bg6 Nge2 c5"],
+  ["b","Caro-Kann · Advance, 4.h4",         "e4 c6 d4 d5 e5 Bf5 h4 h5 c4 e6 Nc3 Ne7"],
+  ["b","Caro-Kann · Advance, 4.c3",         "e4 c6 d4 d5 e5 Bf5 c3 e6 Be2 c5 Nf3 Nc6"],
+  ["b","Caro-Kann · Exchange",              "e4 c6 d4 d5 exd5 cxd5 Bd3 Nc6 c3 Nf6 Bf4 Bg4 Qb3 Qd7"],
+  ["b","Caro-Kann · Exchange, 6.Nf3",       "e4 c6 d4 d5 exd5 cxd5 Bd3 Nc6 c3 Nf6 Nf3 Bg4"],
+  ["b","Caro-Kann · Panov Attack",          "e4 c6 d4 d5 exd5 cxd5 c4 Nf6 Nc3 e6 Nf3 Be7 cxd5 Nxd5"],
+  ["b","Caro-Kann · Classical",             "e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3 Bg6 h4 h6 Nf3 Nd7 h5 Bh7 Bd3 Bxd3 Qxd3 e6"],
+  ["b","Caro-Kann · Classical, 6.Nf3",      "e4 c6 d4 d5 Nc3 dxe4 Nxe4 Bf5 Ng3 Bg6 Nf3 Nd7 h4 h6 h5 Bh7 Bd3 Bxd3 Qxd3 e6"],
+  ["b","Caro-Kann · Classical, 3.Nd2",      "e4 c6 d4 d5 Nd2 dxe4 Nxe4 Bf5"],
+  ["b","Caro-Kann · Two Knights",           "e4 c6 Nf3 d5 Nc3 Bg4 h3 Bxf3 Qxf3 e6"],
+  ["b","Caro-Kann · Two Knights",           "e4 c6 Nc3 d5 Nf3 Bg4"],
+  ["b","Caro-Kann · 2.Nf3 d5 3.e5",         "e4 c6 Nf3 d5 e5 Bf5 d4 e6"],
+  ["b","Caro-Kann · 2.Nf3 d5 3.d3",         "e4 c6 Nf3 d5 d3 Bg4"],
+  ["b","Caro-Kann · Fantasy",               "e4 c6 d4 d5 f3 e6"],
+  ["b","Caro-Kann · vs 2.c4",               "e4 c6 c4 d5 exd5 cxd5 cxd5 Nf6"],
+  ["b","Caro-Kann · vs King's Indian Attack","e4 c6 d3 d5 Nd2 e5 Ngf3 Bd6 g3 Nf6 Bg2 O-O"],
+  // Black vs everything else: Slav
+  ["b","Slav · Main line",                  "d4 d5 c4 c6 Nf3 Nf6 Nc3 dxc4 a4 Bf5 e3 e6 Bxc4 Bb4 O-O Nbd7"],
+  ["b","Slav · 4.e3",                       "d4 d5 c4 c6 Nf3 Nf6 e3 Bf5 Nc3 e6 Nh4 Bg6"],
+  ["b","Slav · Exchange",                   "d4 d5 c4 c6 cxd5 cxd5 Nc3 Nf6 Bf4 Nc6 e3 Bf5"],
+  ["b","Slav · 3.Nc3",                      "d4 d5 c4 c6 Nc3 Nf6 e3 a6"],
+  ["b","Slav · vs the London",              "d4 d5 Bf4 Nf6 e3 c5 c3 Nc6 Nd2 e6 Ngf3 Bd6"],
+  ["b","Slav · vs the London",              "d4 d5 Nf3 Nf6 Bf4 c5 e3 Nc6"],
+  ["b","Slav · vs the Colle",               "d4 d5 Nf3 Nf6 e3 Bf5 Bd3 e6"],
+  ["b","Slav · 2.Nf3",                      "d4 d5 Nf3 Nf6 c4 c6"],
+  ["b","Slav · vs 1.c4",                    "c4 c6 Nf3 d5 e3 Nf6 Nc3 e6"],
+  ["b","Slav · vs 1.c4",                    "c4 c6 d4 d5"],
+  ["b","Caro-Kann · vs 1.c4 2.e4",          "c4 c6 e4 d5"],
+  ["b","Slav · vs the Réti",                "Nf3 d5 c4 c6 b3 Nf6 Bb2 Bf5"],
+  ["b","Slav · vs the Réti",                "Nf3 d5 g3 c6 Bg2 Bg4 O-O Nd7"],
+  ["b","Slav · vs 1.Nf3",                   "Nf3 d5 d4 Nf6"]
+];
+// Out of book, prefer these structure moves when they're within SETUP_MARGIN of the engine's best.
+const SETUP = {
+  w:["d2d4","c1f4","e2e3","g1f3","c2c3","b1d2","f1d3","e1g1","h2h3","f4g3"],
+  b:["c7c6","d7d5","c8f5","c8g4","g8f6","e7e6","b8d7","f8d6","f8e7","e8g8","h7h6"]
+};
+const SETUP_MARGIN=50, BOOK_MAX_LOSS=120;
+const bookKey = fen => fen.split(" ").slice(0,2).join(" ");
+let BOOKMAP = new Map();
+function buildBook(){
+  const map=new Map(), problems=[];
+  for(const [side,name,line] of BOOK){
+    const g=new Chess();
+    for(const san of line.split(" ")){
+      const key=bookKey(g.fen()), mine=g.turn()===side;
+      const m=g.move(san);
+      if(!m){ problems.push(`${name}: illegal ${san}`); break; }
+      if(!mine) continue;
+      const uci=m.from+m.to+(m.promotion||""), prev=map.get(key);
+      if(!prev) map.set(key,{san:m.san, uci, name});
+      else if(prev.uci!==uci) problems.push(`${name}: ${m.san} conflicts with ${prev.san} (${prev.name})`);
+      else if(prev.name!==name) prev.name = prev.name.split(" · ")[0]===name.split(" · ")[0] ? prev.name.split(" · ")[0] : prev.name;
+    }
+  }
+  if(problems.length) console.warn("Book problems:\n"+problems.join("\n"));
+  BOOKMAP=map; return problems;
+}
+function cpOf(l){ return l.kind==="mate" ? (l.val>0 ? 100000-l.val*100 : -100000-l.val*100) : l.val; }
+// returns a suggestion object, null (nothing applies), or undefined (superseded by a newer request)
+async function repertoireMove(fen, full){
+  const top=full.lines[0]; if(!top) return null;
+  const bestCp=cpOf(top), b=BOOKMAP.get(bookKey(fen));
+  if(b){
+    const ln=full.lines.find(l=>l.uci===b.uci); let cp = ln ? cpOf(ln) : null, line=ln||null;
+    if(cp===null){
+      const chk=await Engine.analyse(fen, S.elo, 400, {limit:false, multipv:1, searchmoves:b.uci});
+      if(!chk) return undefined;
+      if(chk.lines[0]){ line=chk.lines[0]; cp=cpOf(line); }
+    }
+    if(cp!==null && bestCp-cp>BOOK_MAX_LOSS) return {kind:"warn", book:b, loss:bestCp-cp};
+    return {kind:"book", uci:b.uci, name:b.name, line};
+  }
+  if(S.board.filter(Boolean).length>=24){
+    for(const u of SETUP[S.turn]){
+      const ln=full.lines.find(l=>l.uci===u);
+      if(ln && bestCp-cpOf(ln)<=SETUP_MARGIN) return {kind:"setup", uci:u, line:ln};
+    }
+  }
+  return null;
+}
+function repFamily(){ return S.me==="w" ? "London" : (S.board[52]==="P" ? "Slav" : "Caro-Kann"); }
 function showPick(san, head, sub){ $("pickSan").textContent=san; $("pickHead").textContent=head; $("pickSub").textContent=sub; }
 function uciToSan(fen, uci){
   const g=new Chess(fen); const m=g.move({from:uci.slice(0,2), to:uci.slice(2,4), promotion:uci[4]||"q"}); return m?m.san:uci;
@@ -550,25 +675,39 @@ function fmtEval(line){
 }
 function renderAnalysis(){
   const a=S.analysis, fen=currentFen();
-  if(!a.best){ showPick("—","No move","The engine returned no move for this position."); return; }
-  const pickSan = uciToSan(fen, a.best);
-  const top = a.lines[0];
+  const pick = a.pick || a.best;
+  if(!pick){ showPick("—","No move","The engine returned no move for this position."); return; }
+  const pickSan = uciToSan(fen, pick);
+  const top = a.lines[0], r = a.rep;
   const you = S.turn===S.me;
-  const head = you ? `Your move at ${S.elo}` : `Likely ${S.elo}-level reply`;
-  let sub;
-  if(!top) sub = "Engine lines unavailable.";
-  else if(top.uci===a.best) sub = `Also the engine's top choice (${fmtEval(top)}).`;
-  else {
-    const pl = a.lines.find(l=>l.uci===a.best);
-    sub = `The engine's top choice is ${uciToSan(fen, top.uci)} (${fmtEval(top)})` + (pl ? `; this move scores ${fmtEval(pl)}.` : ". Compare the two to see what a stronger player spots.");
+  const topNote = top && top.uci!==pick ? ` The engine's top choice is ${uciToSan(fen, top.uci)} (${fmtEval(top)}).` : "";
+  const evalOf = u => { const l=a.lines.find(x=>x.uci===u) || (r && r.line && r.line.uci===u ? r.line : null); return l ? fmtEval(l) : null; };
+  let head, sub;
+  if(r && r.kind==="book"){
+    head = `Book · ${r.name}`;
+    sub = "Your repertoire move." + (evalOf(pick) ? ` Engine rates it ${evalOf(pick)}.` : "") + topNote;
+  } else if(r && r.kind==="warn"){
+    head = `Careful: book move ${r.book.san} doesn't work here`;
+    sub = `In this exact position it loses about ${(r.loss/100).toFixed(1)} pawns, so this is the engine's best move instead. Check what your opponent's last move threatens.`;
+  } else if(r && r.kind==="setup"){
+    head = `${repFamily()} setup move`;
+    sub = `Out of book. This keeps your ${repFamily()} structure and is within half a pawn of the engine's best.` + (evalOf(pick) ? ` Engine: ${evalOf(pick)}.` : "") + topNote;
+  } else {
+    head = you ? (r && r.kind==="out" ? `Out of book · your move at ${S.elo}` : `Your move at ${S.elo}`) : `Likely ${S.elo}-level reply`;
+    if(!top) sub = "Engine lines unavailable.";
+    else if(top.uci===pick) sub = `Also the engine's top choice (${fmtEval(top)}).`;
+    else sub = (evalOf(pick) ? `This move scores ${evalOf(pick)}.` : "Compare it with the engine's choice to see what a stronger player spots.") + topNote;
+    if(!you) sub = `It's ${S.turn==="w"?"White":"Black"}'s turn, not yours. ` + sub;
   }
-  if(!you) sub = `It's ${S.turn==="w"?"White":"Black"}'s turn, not yours. ` + sub;
   showPick(pickSan, head, sub);
+  const shown = a.lines.slice(0,3);
+  const pl = a.lines.find(l=>l.uci===pick) || (r && r.line && r.line.uci===pick ? r.line : null);
+  if(pl && !shown.includes(pl)) shown.push(pl);
   const tb=$("lines");
-  tb.innerHTML = a.lines.length ? "" : `<tr><td colspan="3" class="muted">No lines reported.</td></tr>`;
-  a.lines.forEach(l=>{
-    const tr=document.createElement("tr"); if(l.uci===a.best) tr.className="is-pick";
-    const td1=document.createElement("td"); td1.textContent = uciToSan(fen,l.uci) + (l.uci===a.best?"  ← pick":"");
+  tb.innerHTML = shown.length ? "" : `<tr><td colspan="3" class="muted">No lines reported.</td></tr>`;
+  shown.forEach(l=>{
+    const tr=document.createElement("tr"); if(l.uci===pick) tr.className="is-pick";
+    const td1=document.createElement("td"); td1.textContent = uciToSan(fen,l.uci) + (l.uci===pick?"  ← pick":"");
     const td2=document.createElement("td"); td2.className="ev"; td2.textContent = fmtEval(l);
     const td3=document.createElement("td"); td3.className="pv"; td3.textContent = pvToSan(fen,l.pv,6) + `  (d${l.depth})`;
     tr.append(td1,td2,td3); tb.appendChild(tr);
@@ -880,11 +1019,14 @@ $("elo").value=S.elo; $("eloVal").textContent=S.elo; $("think").value=String(S.t
 $("elo").addEventListener("input", e=>{ S.elo=+e.target.value; $("eloVal").textContent=S.elo; });
 $("elo").addEventListener("change", ()=>{ save(); scheduleAnalysis(); });
 $("think").addEventListener("change", e=>{ S.think=+e.target.value; save(); scheduleAnalysis(); });
+if(saved.rep===false) $("rep").checked=false;
+$("rep").addEventListener("change", ()=>{ save(); scheduleAnalysis(); });
 
 /* ---------- boot ---------- */
 buildPalette(); renderBoard(); updateSteps();
 if(typeof Chess!=="function"){ setChip("bad","chess.js failed to load"); showPick("—","Rules library missing","chess.js didn't load, so the coach can't check positions."); return; }
 showPick("…","Engine loading","Stockfish is about 10 MB; the first load takes a few seconds.");
+buildBook();
 Engine.init().then(scheduleAnalysis).catch(()=>showPick("—","Engine unavailable","Stockfish couldn't be loaded from jsDelivr. Check your connection and reload."));
 })();
 </script>
